@@ -11,7 +11,8 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-DB_PATH = os.environ.get("P2P_GRAPH", "/home/wff/d2d/graphd/kuzu_db")
+# 可移植性: DB 默认落在脚本同目录(每仓天然隔离); 端口由各仓 start.sh 钉定
+DB_PATH = os.environ.get("P2P_GRAPH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "kuzu_db"))
 PORT = int(os.environ.get("P2P_GRAPH_PORT", "8766"))
 
 import kuzu
