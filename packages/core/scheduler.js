@@ -19,10 +19,13 @@ export function createScheduler(adapter, config = {}) {
   const CHAIN_MS = config.chainIntervalMs ?? 45_000
   const log = (...a) => adapter.log?.(...a)
 
+  // #32: 宿主进程读取 graphd 的 .host-token, 经验库写操作需此凭证(worker 环境已剥离)
+  let _hostToken
+  try { _hostToken = fs.readFileSync(`${config.home ?? '/home/wff'}/d2d/graphd/.host-token`, 'utf8').trim() } catch {}
   async function q(cypher, params = {}) {
     const res = await fetch(`${GRAPHD}/query`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(_hostToken ? { 'X-Auth': _hostToken } : {}) },
       body: JSON.stringify({ cypher, params }),
       signal: AbortSignal.timeout(10000),
     })
@@ -156,7 +159,8 @@ export function createScheduler(adapter, config = {}) {
     const proxyEnv = process.env.P2P_PROXY_URL
       ? `\n## OPSEC 出口纪律\n所有 curl 必须走代理: 在每条命令前加 env http_proxy=${process.env.P2P_PROXY_URL} https_proxy=${process.env.P2P_PROXY_URL}; 同一端点连续请求间隔≥2秒`
       : '\n## OPSEC 出口纪律\n同一端点连续请求间隔≥2秒; 单端点请求总数≤50'
-    const boundary = `${proxyEnv}\n\n## 边界(铁律,违反即失败)\n- 仅测授权 scope 内目标\n- 禁止 rm -rf /、mkfs、dd、shutdown;禁止 DROP TABLE 类破坏性 payload\n- 内存受限主机: 禁止 docker run / apt install / npm install 类重操作\n- 预算最后 20% 轮次必须用于结果落盘上报\n- 禁止修改 Engagement/AgentIdentity 节点(归仲裁层所有); 只写 Signal_/Endpoint/Finding/Hypothesis`
+    const boundary = `${proxyEnv}\n\n## 边界(铁律,违反即失败)\n- 仅测授权 scope 内目标\n- 禁止 rm -rf /、mkfs、dd、shutdown;禁止 DROP TABLE 类破坏性 payload\n- 内存受限主机: 禁止 docker run / apt install / npm install 类重操作\n- 预算最后 20% 轮次必须用于结果落盘上报\n- 禁止修改 Engagement/AgentIdentity 节点(归仲裁层所有); 只写 Signal_/Endpoint/Finding/Hypothesis
+- 负向探测结果(端点不存在/不适用/无此功能)只写 status='refuted' 的 Signal, 禁止写成 Finding`
     const obj = `\n## 总目标(最终交付物)\n${state.objective}`
     const briefs = BRIEFS(GRAPHD)
     const gapHints = process.env.P2P_GAP_HINTS || ''
@@ -270,10 +274,12 @@ export function createScheduler(adapter, config = {}) {
           Object.assign(_trace, { high, findings, verified, hyps, dw: state.deepWakeups, cw: state.creativeWakeups })
           if (high > 0 && verified === 0 && state.deepWakeups < 3) {
             runLog(state.eng.name, { event: 'tick', ..._trace, branch: 'deep' })
-            state.deepWakeups++
-            adapter.notify(`自动调度: 深度环第${state.deepWakeups}次启动 (${high} 高权重信号)`)
-            runLog(state.eng.name, { event: 'wake-deep', n: state.deepWakeups, high_signals: high })
-            await runWorker('deep', 'signal-consumer')
+            adapter.notify(`自动调度: 深度环启动 (${high} 高权重信号)`)
+            runLog(state.eng.name, { event: 'wake-deep', n: state.deepWakeups + 1, high_signals: high })
+            try {
+              await runWorker('deep', 'signal-consumer')
+              state.deepWakeups++   // F5: 仅派发成功才计数
+            } catch (e) { log('deep spawn failed:', e?.message) }
             return
           }
           // #19 verified 后闭环沉淀

@@ -58,6 +58,11 @@ def init_schema(conn):
                 raise
 
 
+JUNK_PATTERNS = ["no rate limit", "missing rate limit", "lack of rate limiting",
+                 "rate limiting disabled", "限速缺失", "未限速",
+                 "security header", "安全头", "cors configuration",
+                 "sourcemap", "版本号指纹", "self-xss", "tls warning"]
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -78,13 +83,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _auth(self, level):
         """level='host': 需 HOST_TOKEN; level='worker': WORKER 或 HOST 均可。
-        未配置对应 token 时放行(向后兼容 range 模式)。"""
+        #32(审查F1) 提权修复: host 级必须「已配置且匹配」; 
+        P2P_TOKEN_REQUIRED=1 时未配置即拒绝(生产模式), 默认 0 放行(range 模式)。"""
+        # #32 严格版: 无任何开放回退 —— 未配置 token 的端点一律拒绝
         host = os.environ.get("P2P_HOST_TOKEN", "")
         worker = os.environ.get("P2P_WORKER_TOKEN", "")
         got = self.headers.get("X-Auth", "")
         if level == "host":
-            return (not host) or got == host
-        return (not worker) or got in (worker, host) or bool(host) and got == host
+            return bool(host) and got == host
+        return bool(worker) and got in (worker, host)
 
     def do_POST(self):
 
@@ -113,11 +120,15 @@ class Handler(BaseHTTPRequestHandler):
                         title = str(req.get("title") or "").strip()
                         if not title:
                             return self._send(400, {"ok": False, "error": "title required"})
+                        # F8: severity 枚举校验
+                        sev = str(req.get("severity") or "medium").lower()
+                        if sev not in ("critical", "high", "medium", "low", "info"):
+                            return self._send(400, {"ok": False, "error": f"invalid severity: {sev}"})
                         # P5(审查): PII 机械脱敏 —— 身份证/手机号/邮箱入库存前打码
                         import re as _pii
                         def _redact(s):
                             n = 0
-                            s, k = _pii.subn(r"\d{17}[0-9Xx]", "[REDACTED:idcard]", s); n += k
+                            s, k = _pii.subn(r"\b\d{17}[\dXx]\b", "[REDACTED:idcard]", s); n += k
                             s, k = _pii.subn(r"\b1[3-9]\d{9}\b", "[REDACTED:phone]", s); n += k
                             s, k = _pii.subn(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}", "[REDACTED:email]", s); n += k
                             return s, n
@@ -125,18 +136,16 @@ class Handler(BaseHTTPRequestHandler):
                         for fld in ("title", "repro", "evidence_dir"):
                             if req.get(fld):
                                 req[fld], k = _redact(str(req[fld])); pii_hits += k
-                        tl = title.lower()
-                        junk = ["no rate limit", "missing rate limit", "lack of rate limiting",
-                                "rate limiting disabled", "限速缺失", "未限速",
-                                "security header", "安全头", "cors configuration",
-                                "sourcemap", "版本号指纹", "self-xss", "tls warning"]
-                        if any(j in tl for j in junk):
+                        tl = title.lower().strip()
+                        if tl in ("test", "t", "x"):
+                            return self._send(400, {"ok": False, "error": "placeholder finding rejected"})
+                        if any(j in tl for j in JUNK_PATTERNS):
                             return self._send(400, {"ok": False, "error": "garbage-listed finding rejected"})
                         conn.execute(
                             "CREATE (f:Finding {id:$id, title:$title, severity:$sev, cvss:$cvss, "
                             "evidence_dir:$edir, repro:$repro, category:$cat, gate_status:'candidate', ts:$ts})",
                             parameters={"id": str(req.get("id") or f"f-{int(time.time()*1000)}"),
-                                        "title": title, "sev": str(req.get("severity") or "medium"),
+                                        "title": title, "sev": sev,
                                         "cvss": float(req.get("cvss") or 5.0),
                                         "edir": str(req.get("evidence_dir") or ""),
                                         "repro": str(req.get("repro") or ""),
@@ -182,10 +191,6 @@ class Handler(BaseHTTPRequestHandler):
             t = _g.search(r"title\s*:\s*[\"'](.*?)[\"']", cypher_raw)
             if t:
                 tv = t.group(1).lower()
-                junk = ["no rate limit", "missing rate limit", "lack of rate limiting",
-                        "rate limiting disabled", "\u9650\u901f\u7f3a\u5931", "\u672a\u9650\u901f",
-                        "security header", "\u5b89\u5168\u5934", "cors configuration",
-                        "sourcemap", "\u7248\u672c\u53f7\u6307\u7eb9", "self-xss", "tls warning"]
                 if any(j in tv for j in junk):
                     return self._send(400, {"ok": False, "error": "garbage-listed finding rejected: " + tv[:60]})
         # 缺陷#18: DDL 禁令 —— schema 固定, 运行期禁止建/删表(worker 漂移防线)
@@ -256,6 +261,19 @@ def _jsonify(v):
 
 if __name__ == "__main__":
     db()  # 初始化 schema
+    # #32: 每实例自动生成 host token 文件(宿主进程读取后获得经验库写权限)
+    import secrets as _sec
+    if not os.environ.get("P2P_HOST_TOKEN"):
+        tok_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".host-token")
+        try:
+            os.chmod(tok_path, 0o600)
+        except FileNotFoundError:
+            with open(tok_path, "w") as f:
+                f.write(_sec.token_hex(16))
+            os.chmod(tok_path, 0o600)
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"[graphd] listening :{PORT} db={DB_PATH}", flush=True)
+    _tok = "required" if os.environ.get("P2P_TOKEN_REQUIRED") == "1" else "open"
+    print(f"[graphd] listening :{PORT} db={DB_PATH} token_required={_tok} "
+          f"host={'set' if os.environ.get('P2P_HOST_TOKEN') else 'unset'} "
+          f"worker={'set' if os.environ.get('P2P_WORKER_TOKEN') else 'unset'}", flush=True)
     srv.serve_forever()

@@ -35,7 +35,12 @@ export function createDshAdapter(opts = {}) {
         // OS 级兜底 + detached 进程组(#11 组杀)
         const child = spawn('timeout', ['--signal=KILL', '--kill-after=5', '20m', DSH_BIN, '--profile', 'headless', task], {
           cwd: HOMEDIR,
-          env: { ...process.env, DSH_HOME: DSH_HOME_DIR },
+          env: (() => {
+            // #32: 剥离宿主凭证, 被注入的 worker 无法伪造经验写入
+            const e = { ...process.env, DSH_HOME: DSH_HOME_DIR }
+            delete e.P2P_HOST_TOKEN
+            return e
+          })(),
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: true,
         })

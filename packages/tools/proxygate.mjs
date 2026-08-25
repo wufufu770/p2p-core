@@ -35,8 +35,13 @@ function allowRate(host) {
 }
 
 function hostAllowed(host) {
+  // F11: 支持子域通配(条目以 . 开头 => 匹配自身及全部子域)
   const h = String(host || '').toLowerCase().replace(/:\d+$/, '')
-  return ALLOW.has(h)
+  if (ALLOW.has(h)) return true
+  for (const a of ALLOW) {
+    if (a.startsWith('.') && (h.endsWith(a) || h === a.slice(1))) return true
+  }
+  return false
 }
 
 // ---- HTTP absolute-form 转发(curl 设了 http_proxy 就长这样) ----
@@ -79,6 +84,12 @@ const server = http.createServer((req, res) => {
 
 // ---- CONNECT 隧道(https): 在握手层校验 SNI 主机名, 不解析内容 ----
 server.on('connect', (req, socket, head) => {
+  // F11: CONNECT 鉴权(防未授权隧道)
+  const proxyAuth = process.env.P2P_PROXY_AUTH
+  if (proxyAuth && req.headers['proxy-authorization'] !== `Basic ${Buffer.from(`gate:${proxyAuth}`).toString('base64')}`) {
+    socket.write('HTTP/1.1 407 Proxy Authentication Required\r\n\r\n')
+    return socket.destroy()
+  }
   const host = (req.url || '').split(':')[0].toLowerCase()
   audit({ kind: 'connect', host, url: req.url })
   if (!hostAllowed(host)) {
