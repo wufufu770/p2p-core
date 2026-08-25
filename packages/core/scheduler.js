@@ -22,8 +22,9 @@ export function createScheduler(adapter, config = {}) {
   const log = (...a) => adapter.log?.(...a)
 
   // #32: 宿主进程读取 graphd 的 .host-token, 经验库写操作需此凭证(worker 环境已剥离)
+  const _tokFile = config.hostTokenFile ?? process.env.P2P_HOST_TOKEN_FILE
   let _hostToken
-  try { _hostToken = fs.readFileSync(`${config.home ?? '/home/wff'}/d2d/graphd/.host-token`, 'utf8').trim() } catch {}
+  try { if (_tokFile) _hostToken = fs.readFileSync(_tokFile, 'utf8').trim() } catch (e) { log('token read:', e?.message) }
   async function q(cypher, params = {}) {
     const res = await fetch(`${GRAPHD}/query`, {
       method: 'POST',

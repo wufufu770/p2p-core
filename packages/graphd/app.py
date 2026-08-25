@@ -92,7 +92,10 @@ class Handler(BaseHTTPRequestHandler):
         got = self.headers.get("X-Auth", "")
         if level == "host":
             return bool(host) and got == host
-        return bool(worker) and got in (worker, host)
+        # #33修复: host token 单独配置时也放行宿主写入
+        if worker:
+            return got in (worker, host)
+        return bool(host) and got == host
 
     def do_POST(self):
 
@@ -262,16 +265,18 @@ def _jsonify(v):
 
 if __name__ == "__main__":
     db()  # 初始化 schema
-    # #32: 每实例自动生成 host token 文件(宿主进程读取后获得经验库写权限)
+    # #32: host token 持久化 —— 文件存在则加载进环境; 不存在则生成
     import secrets as _sec
     if not os.environ.get("P2P_HOST_TOKEN"):
         tok_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".host-token")
-        try:
-            os.chmod(tok_path, 0o600)
-        except FileNotFoundError:
+        if os.path.exists(tok_path):
+            os.environ["P2P_HOST_TOKEN"] = open(tok_path).read().strip()
+        else:
+            tok = _sec.token_hex(16)
             with open(tok_path, "w") as f:
-                f.write(_sec.token_hex(16))
+                f.write(tok)
             os.chmod(tok_path, 0o600)
+            os.environ["P2P_HOST_TOKEN"] = tok
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     _tok = "required" if os.environ.get("P2P_TOKEN_REQUIRED") == "1" else "open"
     print(f"[graphd] listening :{PORT} db={DB_PATH} token_required={_tok} "
