@@ -93,6 +93,8 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(n) or b"{}")
         except Exception as e:
             return self._send(400, {"ok": False, "error": f"bad json: {e}"})
+        if not isinstance(req, dict):
+            return self._send(400, {"ok": False, "error": "body must be a JSON object"})
         # token 认证(未配置 P2P_TOKEN 时放行)
         tok = os.environ.get("P2P_TOKEN", "")
         if tok and self.headers.get("X-Auth") != tok:

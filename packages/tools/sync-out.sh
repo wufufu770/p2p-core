@@ -28,3 +28,6 @@ mkdir -p "$D2D/tests"
 cp "$ROOT/tests/test_graphd_gates.py" "$D2D/tests/"
 
 echo "[sync] 完成。消费仓各自 commit+push 固化本次分发。"
+echo "[sync] 统一调度内核 + dsh适配器 -> d2d 插件"
+cp "$ROOT/packages/core/scheduler.js" "$D2D/plugin/pentest-dsh/scheduler.js"
+cp "$ROOT/packages/adapters/dsh.mjs" "$D2D/plugin/pentest-dsh/adapter-dsh.mjs"
