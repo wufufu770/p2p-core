@@ -113,6 +113,18 @@ class Handler(BaseHTTPRequestHandler):
                         title = str(req.get("title") or "").strip()
                         if not title:
                             return self._send(400, {"ok": False, "error": "title required"})
+                        # P5(审查): PII 机械脱敏 —— 身份证/手机号/邮箱入库存前打码
+                        import re as _pii
+                        def _redact(s):
+                            n = 0
+                            s, k = _pii.subn(r"\d{17}[0-9Xx]", "[REDACTED:idcard]", s); n += k
+                            s, k = _pii.subn(r"\b1[3-9]\d{9}\b", "[REDACTED:phone]", s); n += k
+                            s, k = _pii.subn(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}", "[REDACTED:email]", s); n += k
+                            return s, n
+                        pii_hits = 0
+                        for fld in ("title", "repro", "evidence_dir"):
+                            if req.get(fld):
+                                req[fld], k = _redact(str(req[fld])); pii_hits += k
                         tl = title.lower()
                         junk = ["no rate limit", "missing rate limit", "lack of rate limiting",
                                 "rate limiting disabled", "限速缺失", "未限速",

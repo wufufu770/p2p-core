@@ -41,17 +41,24 @@ export function createDshAdapter(opts = {}) {
         })
         liveChildren.set(child.pid, child)
         let out = ''
-        const timer = setTimeout(() => { if (child.pid) killGroup(child.pid) }, 20 * 60_000)
+        let settled = false
+        const finish = (code) => {
+          if (settled) return
+          settled = true
+          try { fs.mkdirSync(EVIDENCE_DIR, { recursive: true }) } catch (e) { console.error('[adapter] evidence:', e?.message) }
+          try { fs.writeFileSync(`${EVIDENCE_DIR}/${Date.now()}-${ring}.log`, out) } catch {}
+          resolve({ code, text: out.slice(-2000) })
+        }
+        const hardTimer = setTimeout(() => { if (child.pid) killGroup(child.pid) }, 20 * 60_000)
+        // #30 修复: close 可能因 SIGKILL 竞争不触发 -> 兜底强制 resolve, 杜绝 workers.size 永久卡死
+        const settleTimer = setTimeout(() => { killGroup(child.pid ?? 0); finish(null) }, 21 * 60_000)
         child.stdout.on('data', (d) => (out += d.toString()))
         child.stderr.on('data', (d) => (out += d.toString()))
         child.on('close', (code) => {
-          clearTimeout(timer)
+          clearTimeout(hardTimer)
+          clearTimeout(settleTimer)
           for (const [k, c] of liveChildren) if (c === child) liveChildren.delete(k)
-          try {
-            fs.mkdirSync(EVIDENCE_DIR, { recursive: true })
-            fs.writeFileSync(`${EVIDENCE_DIR}/${Date.now()}-${ring}.log`, out)
-          } catch (e) { console.error('[adapter] evidence:', e?.message) }
-          resolve({ code, text: out.slice(-2000) })
+          finish(code)
         })
       })
     },

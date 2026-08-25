@@ -46,6 +46,13 @@ export function createScheduler(adapter, config = {}) {
   function hostOf(u) { try { return new URL(u).hostname.toLowerCase() } catch { return '' } }
   function checkBash(cmd, eng) {
     for (const re of DESTRUCTIVE) if (re.test(cmd)) return `危险命令被铁律拦截: ${re.source}`
+    // P1(审查): 连接级旁路面拉黑 -- --resolve 改写解析 / -x·--proxy 外部代理 / -L 跟随跳出 scope 的重定向
+    if (/\s--resolve\b/.test(cmd)) return 'OPSEC: --resolve 可绕过 scope 校验, 禁用'
+    if (/\s(-x|--)proxy\b/.test(cmd)) return 'OPSEC: 外部代理可绕过出口治理, 禁用'
+    if (/curl[^|]*\s-L\b/.test(cmd) && eng) return 'OPSEC: -L 重定向可能跳出 scope, 请手动逐跳验证'
+    if (/\s--limit-rate\b/.test(cmd) === false && /curl\s+http/.test(cmd)) {
+      // P2 最小速率治理: 注入限速提示由 brief 承担, 此处仅拦截明显轰击
+    }
     if (/Engagement|AgentIdentity/.test(cmd) && /(SET|DELETE)/i.test(cmd))
       return '状态保护: worker 无权修改 Engagement/AgentIdentity 节点'
     if (!eng) return null
@@ -146,7 +153,10 @@ export function createScheduler(adapter, config = {}) {
     const refs = ring !== 'discovery' ? collectContextRefs(eng.name, wid) : []
     const refsBlock = refs.length ? `\n## 上游成员产物(动手前先读这些交接文件)\n${refs.map((r) => '- ' + r).join('\n')}` : ''
     const artifactsBlock = `\n## 产物落盘(硬性, handoff 制度)\n你的专属产物目录: ${artifactDir}\n收工前必须写入两个文件: evidence.md(关键原始请求/响应证据) 与 handoff.md(完成事项/发现清单/未决方向, 给下一个成员看)。图里写 Finding 是给评估器, 这两个文件是给接力者。`
-    const boundary = `\n\n## 边界(铁律,违反即失败)\n- 仅测授权 scope 内目标\n- 禁止 rm -rf /、mkfs、dd、shutdown;禁止 DROP TABLE 类破坏性 payload\n- 内存受限主机: 禁止 docker run / apt install / npm install 类重操作\n- 预算最后 20% 轮次必须用于结果落盘上报\n- 禁止修改 Engagement/AgentIdentity 节点(归仲裁层所有); 只写 Signal_/Endpoint/Finding/Hypothesis`
+    const proxyEnv = process.env.P2P_PROXY_URL
+      ? `\n## OPSEC 出口纪律\n所有 curl 必须走代理: 在每条命令前加 env http_proxy=${process.env.P2P_PROXY_URL} https_proxy=${process.env.P2P_PROXY_URL}; 同一端点连续请求间隔≥2秒`
+      : '\n## OPSEC 出口纪律\n同一端点连续请求间隔≥2秒; 单端点请求总数≤50'
+    const boundary = `${proxyEnv}\n\n## 边界(铁律,违反即失败)\n- 仅测授权 scope 内目标\n- 禁止 rm -rf /、mkfs、dd、shutdown;禁止 DROP TABLE 类破坏性 payload\n- 内存受限主机: 禁止 docker run / apt install / npm install 类重操作\n- 预算最后 20% 轮次必须用于结果落盘上报\n- 禁止修改 Engagement/AgentIdentity 节点(归仲裁层所有); 只写 Signal_/Endpoint/Finding/Hypothesis`
     const obj = `\n## 总目标(最终交付物)\n${state.objective}`
     const briefs = BRIEFS(GRAPHD)
     const gapHints = process.env.P2P_GAP_HINTS || ''
@@ -242,20 +252,24 @@ export function createScheduler(adapter, config = {}) {
       if (!state.eng) return stopChainLoop()
       void (async () => {
         try {
-          if (state.workers.size > 0) return
+          const _trace = { w: state.workers.size }
+          if (state.workers.size > 0) { runLog(state.eng?.name ?? '?', { event: 'tick', ..._trace, skip: 'workers' }); return }
           // #22 心跳窗口
           const cutoff = new Date(Date.now() - 30 * 60_000).toISOString()
           const runningN = Number((await q(
             `MATCH (a:AgentIdentity) WHERE a.status='running' AND a.updated_at >= $c RETURN count(a) AS c`,
             { c: cutoff },
           ))[0]?.c ?? 0)
-          if (runningN > 0) return
+          _trace.runningN = runningN
+          if (runningN > 0) { runLog(state.eng.name, { event: 'tick', ..._trace, skip: 'runningN' }); return }
           const high = Number((await q(`MATCH (s:Signal_) WHERE s.weight>=3 AND s.status='open' RETURN count(s) AS c`))[0]?.c ?? 0)
           const findings = Number((await q(`MATCH (f:Finding) RETURN count(f) AS c`))[0]?.c ?? 0)
           // #12 verified 判据
           const verified = Number((await q(`MATCH (f:Finding) WHERE f.gate_status='verified' RETURN count(f) AS c`))[0]?.c ?? 0)
           const hyps = Number((await q(`MATCH (h:Hypothesis) WHERE h.status='open' RETURN count(h) AS c`))[0]?.c ?? 0)
+          Object.assign(_trace, { high, findings, verified, hyps, dw: state.deepWakeups, cw: state.creativeWakeups })
           if (high > 0 && verified === 0 && state.deepWakeups < 3) {
+            runLog(state.eng.name, { event: 'tick', ..._trace, branch: 'deep' })
             state.deepWakeups++
             adapter.notify(`自动调度: 深度环第${state.deepWakeups}次启动 (${high} 高权重信号)`)
             runLog(state.eng.name, { event: 'wake-deep', n: state.deepWakeups, high_signals: high })
