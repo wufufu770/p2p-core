@@ -2,7 +2,13 @@
 # restart-graphds.sh — 可靠的双 graphd 重启(幂等, 等待健康)
 set -u
 kill_all() {
-  for p in $(pgrep -f "graphd.*python3 app\.py"); do kill -9 "$p" 2>/dev/null; done
+  # 按 cwd 精确识别 graphd 实例(cmdline 只有 "python3 app.py")
+  for p in $(pgrep -f "python3 app\.py"); do
+    cwd=$(readlink "/proc/$p/cwd" 2>/dev/null)
+    case "$cwd" in
+      */graphd) kill -9 "$p" 2>/dev/null ;;
+    esac
+  done
   sleep 1
 }
 wait_health() { # port
