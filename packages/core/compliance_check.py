@@ -38,10 +38,10 @@ def check(port, label):
     eng = q(port, "MATCH (e:Engagement) RETURN e.status AS s")
     st = eng[0]["s"] if eng else "?"
     add("防卡死/反思唤醒", creative>0 or st in ("completed","exhausted"), f"creative={creative} status={st}")
-    # 6 质量门控: Finding 都有 severity 且 gate_status=verified
-    rows = q(port, "MATCH (f:Finding) RETURN f.severity AS s, f.gate_status AS g")
-    bad = [r for r in rows if not r["s"] or (r["g"] and r["g"]!="verified")]
-    add("质量门控(verified)", len(rows)>0 and not bad, f"bad={len(bad)} total={len(rows)}")
+    # 6 质量门控: Finding 必须有 severity 且经独立重放验证(validator 环)
+    rows = q(port, "MATCH (f:Finding) RETURN f.severity AS s, f.verified_at AS va")
+    bad = [r for r in rows if not r["s"] or not r.get("va")]
+    add("质量门控(独立重放)", len(rows)>0 and not bad, f"bad={len(bad)} total={len(rows)}")
     # 7 目标完成制: Finding.repro 含可复现命令或产物
     rows = q(port, "MATCH (f:Finding) WHERE f.repro CONTAINS 'curl' RETURN count(f) AS c")
     add("目标完成制(repro)", (rows[0]["c"] if rows else 0) > 0, f"curl-repro={rows[0]['c'] if rows else 0}")

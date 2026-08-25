@@ -3,6 +3,8 @@
 // 行为保真清单见 adapters/README.md(#12/#16/#19/#22/#25 与硬规则 A-F)
 
 import fs from 'node:fs'
+import { validateAll } from './validator.js'
+import { buildPlans, planFocus } from './planner.js'
 
 export function BRIEFS(GRAPHD) {
   return {
@@ -274,16 +276,33 @@ export function createScheduler(adapter, config = {}) {
           Object.assign(_trace, { high, findings, verified, hyps, dw: state.deepWakeups, cw: state.creativeWakeups })
           if (high > 0 && verified === 0 && state.deepWakeups < 3) {
             runLog(state.eng.name, { event: 'tick', ..._trace, branch: 'deep' })
+            // 方向4: 规划器排序攻击假设, 注入 deep brief focus
+            let focus
+            try {
+              const plans = await buildPlans(q)
+              focus = planFocus(plans)
+              if (plans.length) adapter.notify(`规划器: ${plans.length} 条计划已生成(最高分 ${plans[0].score})`)
+            } catch (e) { log('planner:', e?.message) }
             adapter.notify(`自动调度: 深度环启动 (${high} 高权重信号)`)
             runLog(state.eng.name, { event: 'wake-deep', n: state.deepWakeups + 1, high_signals: high })
             try {
-              await runWorker('deep', 'signal-consumer')
+              await runWorker('deep', 'signal-consumer', focus)
               state.deepWakeups++   // F5: 仅派发成功才计数
             } catch (e) { log('deep spawn failed:', e?.message) }
             return
           }
           // #19 verified 后闭环沉淀
           if (verified > 0 && hyps === 0) {
+            // 方向2 验证器环: worker 自封的 verified 必须经独立重放背书
+            if (!state.validatedAt) {
+              adapter.notify('验证器环: 独立重放全部候选 Finding...')
+              const rs = await validateAll(q, (...a) => log(...a)).catch((e) => { log('validateAll:', e?.message); return [] })
+              state.validatedAt = Date.now()
+              const okN = rs.filter(r => r.verified).length
+              adapter.notify(`验证完成: ${okN}/${rs.length} 通过重放, 其余隔离`)
+              runLog(state.eng.name, { event: 'validated', total: rs.length, passed: okN })
+              return   // 下一 tick 以机械验证后的状态重新判定
+            }
             adapter.notify('目标达成(verified>=1 且无未消化假设): 执行经验沉淀并冻结')
             await harvest()
             await q(`MATCH (e:Engagement {name:$n}) SET e.status='completed'`, { n: state.eng.name })
@@ -309,6 +328,16 @@ export function createScheduler(adapter, config = {}) {
             if (!stable) { state.idleStreak++; return }
             state.idleStreak++
             if (state.idleStreak < 2) return
+            // 方向2 验证器环: worker 自封的 verified 必须经独立重放背书
+            if (!state.validatedAt) {
+              adapter.notify('验证器环: 独立重放全部候选 Finding...')
+              const rs = await validateAll(q, (...a) => log(...a)).catch((e) => { log('validateAll:', e?.message); return [] })
+              state.validatedAt = Date.now()
+              const okN = rs.filter(r => r.verified).length
+              adapter.notify(`验证完成: ${okN}/${rs.length} 通过重放, 其余隔离`)
+              runLog(state.eng.name, { event: 'validated', total: rs.length, passed: okN })
+              return   // 下一 tick 以机械验证后的状态重新判定
+            }
             adapter.notify('目标闭环(连续两轮稳定): 执行经验沉淀')
             await harvest()
             await q(`MATCH (e:Engagement {name:$n}) SET e.status='completed'`, { n: state.eng.name })

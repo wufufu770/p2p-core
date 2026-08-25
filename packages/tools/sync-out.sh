@@ -40,3 +40,5 @@ cp "$ROOT/packages/core/scheduler.js" "$PENT/scheduler.js"
 cp "$ROOT/packages/adapters/pi.mjs" "$PENT/adapter-pi.mjs"
 cp "$ROOT/plugins/pentest-pi/index.ts" "$PENT/index.ts"
 cp "$ROOT"/packages/core/roles/*.json "$PENT/roles/"
+cp "$ROOT/packages/core/validator.js" "$ROOT/packages/core/planner.js" "$ROOT/packages/core/report.mjs" "$D2D/plugin/pentest-dsh/" 2>/dev/null || true
+cp "$ROOT/packages/core/validator.js" "$ROOT/packages/core/planner.js" "$ROOT/packages/core/report.mjs" "$PENT/" 2>/dev/null || true
