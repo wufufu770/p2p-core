@@ -5,6 +5,20 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 
 export function createDshAdapter(opts = {}) {
+  // F4: registerGate 属于 adapter(宿主专属 API), 薄壳只传纯函数 handler
+  let _gateHandler = null
+  function wireGate(ctx) {
+    if (!ctx?.on) return
+    ctx.on('tools/pre-execute', async (exec, next) => {
+      if (exec?.name === 'bash' && _gateHandler) {
+        const cmd = String(exec.arguments?.command ?? '')
+        const reasonPromise = _gateHandler(cmd)
+        const reason = typeof reasonPromise?.then === 'function' ? await reasonPromise : reasonPromise
+        if (reason) return { kind: 'deny', reason }
+      }
+      return next()
+    })
+  }
   const HOMEDIR = opts.home ?? '/home/wff/d2d'
   const DSH_BIN = opts.dshBin ?? process.env.P2P_DSH_BIN ?? 'dsh'
   const DSH_HOME_DIR = opts.dshHome ?? process.env.P2P_DSH_HOME ?? `${opts.osHome}/.dsh`
@@ -30,6 +44,11 @@ export function createDshAdapter(opts = {}) {
     log: (...a) => console.error('[pentest]', ...a),
     notify: (m) => console.error('[pentest]', m),
     async bootstrap() {},
+    /** F4: 门控挂载点 —— adapter 持有宿主 API; handler(cmd)->reason|null */
+    registerGate(ctx, handler) {
+      _gateHandler = handler
+      wireGate(ctx)
+    },
     spawnWorker({ ring, task }) {
       return new Promise((resolve) => {
         // OS 级兜底 + detached 进程组(#11 组杀)
