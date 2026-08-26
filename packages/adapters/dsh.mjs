@@ -23,6 +23,8 @@ export function createDshAdapter(opts = {}) {
   const DSH_BIN = opts.dshBin ?? process.env.P2P_DSH_BIN ?? 'dsh'
   const DSH_HOME_DIR = opts.dshHome ?? process.env.P2P_DSH_HOME ?? `${opts.osHome}/.dsh`
   const EVIDENCE_DIR = opts.evidenceDir ?? `${HOMEDIR}/evidence/workers`
+  // 在线靶场网络延迟高: 超时可配置(env P2P_WORKER_TIMEOUT_MS / opts.timeoutMs), 默认 20m
+  const WORKER_TIMEOUT_MS = opts.timeoutMs ?? parseInt(process.env.P2P_WORKER_TIMEOUT_MS ?? '1200000', 10)
   const liveChildren = new Map()
 
   function killGroup(pid, sig = 'SIGKILL') {
@@ -52,7 +54,7 @@ export function createDshAdapter(opts = {}) {
     spawnWorker({ ring, task }) {
       return new Promise((resolve) => {
         // OS 级兜底 + detached 进程组(#11 组杀)
-        const child = spawn('timeout', ['--signal=KILL', '--kill-after=5', '20m', DSH_BIN, '--profile', 'headless', task], {
+        const child = spawn('timeout', ['--signal=KILL', '--kill-after=5', `${Math.ceil(WORKER_TIMEOUT_MS / 1000)}s`, DSH_BIN, '--profile', 'headless', task], {
           cwd: HOMEDIR,
           env: (() => {
             // #32: 剥离宿主凭证, 被注入的 worker 无法伪造经验写入
@@ -73,7 +75,7 @@ export function createDshAdapter(opts = {}) {
           try { fs.writeFileSync(`${EVIDENCE_DIR}/${Date.now()}-${ring}.log`, out) } catch {}
           resolve({ code, text: out.slice(-2000) })
         }
-        const hardTimer = setTimeout(() => { if (child.pid) killGroup(child.pid) }, 20 * 60_000)
+        const hardTimer = setTimeout(() => { if (child.pid) killGroup(child.pid) }, WORKER_TIMEOUT_MS)
         // #30 修复: close 可能因 SIGKILL 竞争不触发 -> 兜底强制 resolve, 杜绝 workers.size 永久卡死
         const settleTimer = setTimeout(() => { killGroup(child.pid ?? 0); finish(null) }, 21 * 60_000)
         child.stdout.on('data', (d) => (out += d.toString()))

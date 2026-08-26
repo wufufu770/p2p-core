@@ -15,6 +15,11 @@ export async function buildPlans(q, opts = {}) {
   const SEV = { critical: 1.5, high: 1.2, medium: 1.0, low: 0.6, info: 0.3 }
 
   // 候选 = open 且 weight>=2 的信号, 关联端点数越多越值得深入
+  // N2: 排除已有 chosen/done Plan 的信号类型(防重复探索)
+  const doneSignals = new Set(
+    (await q(`MATCH (p:Plan) WHERE p.status IN ['chosen','done'] RETURN p.text AS t`).catch(() => []))
+      .map(r => String(r.t ?? '').match(/信号类型\s*(\S+)/)?.[1] ?? ''),
+  )
   const cands = await q(
     `MATCH (s:Signal_) WHERE s.weight >= 2 AND s.status='open'
      OPTIONAL MATCH (s)-[:AT]->(e:Endpoint)
@@ -29,7 +34,8 @@ export async function buildPlans(q, opts = {}) {
     ).catch(() => [])).map((r) => String(r.t ?? '')),
   )
 
-  const scored = cands.map((c) => {
+  const freshCands = cands.filter(c => !doneSignals.has(String(c.type ?? '').toLowerCase()))
+  const scored = freshCands.map((c) => {
     const t = String(c.type ?? '').toLowerCase()
     let score = Number(c.w ?? 1) * (Number(c.eps ?? 0) + 1)
     for (const [k, v] of Object.entries(priorOf)) {

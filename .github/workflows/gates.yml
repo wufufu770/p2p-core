@@ -13,3 +13,16 @@ jobs:
           python-version: "3.12"
       - run: pip install pytest
       - run: pytest tests/test_graphd_gates.py -q
+
+  sync-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          # 只读校验: core 内无硬编码 /home/wff 路径残留(一致性门禁的 CI 版)
+          ! grep -rE '"\/home\/wff[^"]*"' packages/core/*.js packages/core/*.mjs packages/graphd/*.py 2>/dev/null | grep -v '.host-token' || exit 1
+      - run: |
+          # 断言: 每个核心模块存在(单一事实源完整性)
+          for f in packages/core/scheduler.js packages/core/validator.js packages/core/planner.js packages/core/sanitize.js packages/core/report.mjs packages/graphd/app.py tests/test_graphd_gates.py; do
+            test -f "$f" || { echo "MISSING: $f"; exit 1; }
+          done

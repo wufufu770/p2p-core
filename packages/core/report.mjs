@@ -6,6 +6,7 @@ import fs from 'node:fs'
 
 const PORT = process.argv[2] ?? '8766'
 const ENG = process.argv[3] ?? ''
+const SRC_FORMAT = process.argv[4] ?? ''   // --format src-srcname
 const GRAPHD = `http://127.0.0.1:${PORT}`
 
 async function q(cypher) {
@@ -32,8 +33,9 @@ async function main() {
      ORDER BY f.cvss DESC`,
   )).filter(f => f.s && SEV_ORDER[f.s] !== undefined)
 
+  // N3: 只用 category 字段判断加固建议(不猜标题, 避免 cors 标题的高危发现被降格)
   const advisories = await q(
-    `MATCH (f:Finding) WHERE f.severity='info' OR toLower(f.title) CONTAINS 'header' OR toLower(f.title) CONTAINS 'cors'
+    `MATCH (f:Finding) WHERE f.category='config_advisory' OR f.severity='info'
      RETURN f.id AS id, f.title AS t, f.repro AS r`,
   ).catch(() => [])
 
@@ -77,6 +79,20 @@ async function main() {
 
   md += `---\n_由 p2p-core 三环系统自动生成; 零人工编辑。_\n`
   process.stdout.write(md)
+  if (SRC_FORMAT.startsWith('src-')) {
+    // E4: SRC 平台 JSON 四件套(漏洞类型/Rank/危害/复现/assets)
+    const out = findings.map((f) => ({
+      vuln_type: f.cat || 'unknown',
+      title: f.t,
+      severity: (f.s || 'low').toUpperCase(),
+      rank: (SEV_ORDER[f.s] ?? 9) + 1,
+      description: f.r?.slice(0, 500) ?? '',
+      reproduce: f.r?.slice(0, 500) ?? '',
+      assets: [eng.t],
+      cvss: f.cvss ?? null,
+    }))
+    process.stdout.write('\n<!-- SRC-JSON -->\n' + JSON.stringify({ platform: SRC_FORMAT, findings: out }, null, 1))
+  }
 }
 
 main().catch(e => { console.error('report failed:', e.message); process.exit(1) })

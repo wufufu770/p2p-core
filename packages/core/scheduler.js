@@ -8,7 +8,7 @@ import { buildPlans, planFocus } from './planner.js'
 
 export function BRIEFS(GRAPHD) {
   return {
-    discovery: `你是三环系统的发现环 worker。广度要求(逐项执行): (1)/robots.txt 全部 Disallow 路径逐一访问; (2)首页HTML注释与链接解析; (3)常见敏感路径小字典探测(/flag.txt /backup.zip /.bak /admin /secret.key /console); (4)再走业务链路做缝隙轻验证。先读经验先验: curl -s -X POST ${GRAPHD}/query -H 'Content-Type: application/json' -d '{"cypher":"MATCH (e:ExperienceWeight) RETURN e.pattern AS p, e.prior AS w ORDER BY e.prior DESC LIMIT 10"}'。若某条经验确实帮到了你,回报计数(hits+1;有实质帮助再加 wins)。只允许写入这些已存在的表: Signal_/Endpoint/Finding/Hypothesis(禁止 CREATE/DROP TABLE,禁止自创表);推荐结构化端点 POST ${GRAPHD}/write/signal 与 POST ${GRAPHD}/write/finding。硬规则F(广度必含): 文件名/路径参数轻测 ../../etc/passwd(读到root:x即写Finding); 转账/兑换端点5连发并发重放后查余额差(异常即写Finding)。再对目标走完整业务链路做缝隙检测与轻量验证:枚举端点/参数,单点轻探测,结果写入图数据库。已排除方向也上报(status='refuted',weight=0.1)。预算最多15轮工具调用。`,
+    discovery: `你是三环系统的发现环 worker。广度要求(逐项执行): (1)/robots.txt 全部 Disallow 路径逐一访问; (2)首页HTML注释与链接解析; (3)常见敏感路径小字典探测(/flag.txt /backup.zip /.bak /admin /secret.key /console); (4)再走业务链路做缝隙轻验证。先读经验先验: curl -s -X POST ${GRAPHD}/query -H 'Content-Type: application/json' -d '{"cypher":"MATCH (e:ExperienceWeight) RETURN e.pattern AS p, e.prior AS w ORDER BY e.prior DESC LIMIT 10"}'。若某条经验确实帮到了你,回报计数(hits+1;有实质帮助再加 wins)。只允许写入这些已存在的表: Signal_/Endpoint/Finding/Hypothesis(禁止 CREATE/DROP TABLE,禁止自创表);推荐结构化端点 POST ${GRAPHD}/write/signal 与 POST ${GRAPHD}/write/finding。硬规则F(广度必含): 文件名/路径参数轻测 ../../etc/passwd(读到root:x即写Finding); 转账/兑换端点5连发并发重放后查余额差(异常即写Finding)。N2(AT边): 每个 Signal_ 关联其来源 Endpoint 时必须创建 (s)-[:AT]->(e) 关系边。再对目标走完整业务链路做缝隙检测与轻量验证:枚举端点/参数,单点轻探测,结果写入图数据库。已排除方向也上报(status='refuted',weight=0.1)。预算最多15轮工具调用。`,
     deep: `你是深度攻击环 worker。先读经验先验(同发现环的 ExperienceWeight 查询)。再 curl ${GRAPHD}/query 查询 weight>=3 且 status='open' 的 Signal_,三层递进(L1基础→L2筛选+剪枝→L3跨端点组合)。总目标是拿最终产物而非证明漏洞:攻击链达成后立即提取敏感产物(flag/关键数据样本),写入 Finding.repro 与 checkpoint。写 Finding 推荐结构化端点 POST ${GRAPHD}/write/finding(JSON: id/title/severity/cvss/repro/category/gate_status='verified'),写信号用 /write/signal。剪枝信号置 status='pruned'。硬规则A(越权类): Finding.repro 必须含"低权限/未授权身份成功调用"的证据(状态码+响应体片段);仅有管理员身份可复现的一律只写 Signal 不写 Finding——管理员操作是正常功能。硬规则B(竞态类): 对转账/兑换/限额类端点必须并发重放≥5次同一请求(bash 里 & 后台连发 curl 后查余额差),余额/次数出现负值或超限即 verified。硬规则C(SSRF类): 遇到服务端发起URL的参数(头像/导入/webhook), 必试 http://169.254.169.254/latest/meta-data/ 与内网保留段, 回显 instance-id/ami-id 即 verified 证据。硬规则D(穿越类): 文件名/路径类参数必测 ../../etc/passwd 及 ..%2f..%2f%2e%2e 编码变体, 回显 root:x:0: 即 verified。硬规则E(落盘铁律): 每一个结论性成果必须当场写入图数据库——禁止只写本地 report.md/聊天文本, 图里没有=没做。预算最多14轮。`,
     creative: `你是创造探索环 worker。读取失败记录(status IN ['refuted','pruned'] 的 Signal_)与 open 的 Hypothesis,反转假设(有WAF↔无WAF/前端校验↔后端校验/技术栈误判),产出新 Hypothesis 节点(POST ${GRAPHD}/write/hypothesis)并用 SUGGESTS 边连接相关 Endpoint。fail 先验只代表降优先级: 快速验证不成立就放弃并记录, 不作为绝对禁入; 禁止原样重复已完整证伪的具体路径。预算最多8轮。`,
   }
@@ -298,6 +298,10 @@ export function createScheduler(adapter, config = {}) {
             try {
               await runWorker('deep', 'signal-consumer', focus)
               state.deepWakeups++   // F5: 仅派发成功才计数
+              // N2: 深度环消费后标记 Plan done(生命周期)
+              if (focus) {
+                await q(`MATCH (p:Plan) WHERE p.status='chosen' SET p.status='done'`).catch(() => {})
+              }
             } catch (e) { log('deep spawn failed:', e?.message) }
             return
           }
