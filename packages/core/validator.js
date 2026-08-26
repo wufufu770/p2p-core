@@ -64,6 +64,13 @@ export async function validateFinding(q, finding, opts = {}) {
       : `upstream fail: ${result.err ?? result.httpCode}`
   }
   const verified = Boolean(result.ok && (result.httpCode === null || result.httpCode < 500))
+  // 方向2 补完: 重放的响应样本机械写入 repro(证据链本体, 非人工编辑)
+  if (verified && result.bodySample && cmd) {
+    await q(
+      `MATCH (f:Finding {id:$id}) SET f.repro = f.repro + $body`,
+      { id: finding.id, body: ` | replayed_response: ${String(result.bodySample).slice(0, 200)}` },
+    ).catch((e) => opts.log?.('repro append failed:', e?.message))
+  }
   await q(
     `MATCH (f:Finding {id:$id}) SET f.gate_status=$g, f.verified_at=$at, f.verified_log=$lg`,
     { id: finding.id, g: verified ? 'verified' : 'quarantined',

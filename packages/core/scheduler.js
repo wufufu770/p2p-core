@@ -138,6 +138,15 @@ export function createScheduler(adapter, config = {}) {
   async function runWorker(ring, chain, focus) {
     const eng = state.eng
     if (!eng) return '无活跃 engagement'
+    // 方向5后半: 继任者注入 — 查找同环同链路的最近 checkpoint
+    let predecessorBlock = ''
+    try {
+      const prev = await q(
+        `MATCH (a:AgentIdentity) WHERE a.ring=$r AND a.chain=$c AND a.checkpoint <> '' RETURN a.checkpoint AS cp ORDER BY a.updated_at DESC LIMIT 1`,
+        { r: ring, c: chain },
+      )
+      if (prev[0]?.cp) predecessorBlock = `\n## 前任交接(断点恢复)\n你是 ${prev[0].cp.slice(0, 30)}... 的继任者。前任 checkpoint: ${String(prev[0].cp).slice(0, 600)}`
+    } catch (e) { log('predecessor query:', e?.message) }
     const wid = `${eng.name}-${ring}-${Math.random().toString(36).slice(2, 6)}`
     await q(
       `CREATE (a:AgentIdentity {worker_id:$w, ring:$r, chain:$c, status:'running', checkpoint:'', todo:'', updated_at:$t})`,
@@ -168,7 +177,7 @@ export function createScheduler(adapter, config = {}) {
     const briefs = BRIEFS(GRAPHD)
     const gapHints = process.env.P2P_GAP_HINTS || ''
     const gapLine = gapHints ? `\n## 上一轮自评缺口(本轮必须优先覆盖, 来自自身覆盖报告而非外部答案): ${gapHints}` : ''
-    const task = `${briefs[ring]}${obj}${boundary}${roleBlock}${artifactsBlock}${refsBlock}${gapLine}${focus ? `\n重点: ${focus}` : ''}\n\nTask 执行开始。`
+    const task = `${briefs[ring]}${obj}${boundary}${roleBlock}${predecessorBlock}${artifactsBlock}${refsBlock}${gapLine}${focus ? `\n重点: ${focus}` : ''}\n\nTask 执行开始。`
     runLog(eng.name, { event: 'dispatch', worker_id: wid, ring, chain, role: role?.id ?? 'default' })
     const p = adapter.spawnWorker({ ring, task })
       .then(async ({ code, text }) => {
